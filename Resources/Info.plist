@@ -17,8 +17,8 @@
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>© 2026 Ata Mutlu. MIT License.</string>
-    <key>NSDesktopFolderUsageDescription</key><string>NotchClip reads new screenshots saved to your Desktop so they appear on the shelf.</string>
-    <key>NSDocumentsFolderUsageDescription</key><string>NotchClip reads new screenshots saved to your Documents folder so they appear on the shelf.</string>
-    <key>NSDownloadsFolderUsageDescription</key><string>NotchClip reads new screenshots saved to your Downloads folder so they appear on the shelf.</string>
+    <key>NSDesktopFolderUsageDescription</key><string>NotchClip saves a clip to your Desktop when you choose Save (⌘S).</string>
+    <key>NSDocumentsFolderUsageDescription</key><string>NotchClip saves a clip where you choose with Save As.</string>
+    <key>NSDownloadsFolderUsageDescription</key><string>NotchClip saves a clip where you choose with Save As.</string>
 </dict>
 </plist>

@@ -47,12 +47,8 @@ jobs:
           ( sleep 120; echo "self-test timed out"; pkill -x NotchClip ) &
           build/NotchClip.app/Contents/MacOS/NotchClip --self-test 2>&1 | tee selftest.log
 
-      - name: Launch smoke test
-        run: |
-          open -n build/NotchClip.app --env NOTCHCLIP_HOME="$RUNNER_TEMP/notchclip-home"
-          sleep 6
-          pgrep -x NotchClip
-          pkill -x NotchClip
+      - name: Real screenshot pipeline (system settings, ⌘⇧3, restore on quit)
+        run: scripts/ci-screenshot-e2e.sh 2>&1 | tee screenshot-e2e.log
 
       - uses: actions/upload-artifact@v4
         if: always()

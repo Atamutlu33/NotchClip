@@ -21,6 +21,7 @@ The notch is the one part of the screen you never use. NotchClip turns it into a
 - **Hover to open.** Touch the notch with the pointer and the shelf slides out; move away and it tucks back in. Works in full-screen apps and on every Space. Macs without a notch get an invisible hot zone at the top-centre of the screen.
 - **Paste where you were.** Click a clip (or press <kbd>↩</kbd>) and it is pasted straight into the app you were typing in. The shelf never steals focus from that app.
 - **Find anything.** Type to search across text, link titles, file names, the source app and even **text inside images** (on-device OCR). Matching ignores case and accents, and forgives typos.
+- **Screenshots without Desktop clutter.** ⌘⇧3, ⌘⇧4 and ⌘⇧5 land on the shelf and on the clipboard instead of the Desktop. The shelf peeks down to show the new shot (without stealing your keyboard); you decide what happens next — paste it, save it (⌘S → Desktop, ⇧⌘S → choose a place), pin it or delete it. Screen recordings are kept on the shelf as files. Your own screenshot settings come back when you turn this off or quit.
 - **A drop zone too.** Drag files, images or text onto the notch to keep them on the shelf, then drag them back out into any app.
 - **Fast and light.** Native Swift/AppKit/SwiftUI, one small JSON index plus de-duplicated image files, thumbnails decoded once and cached.
 
@@ -54,6 +55,7 @@ scripts/install.sh          # builds, installs to /Applications and launches
 | <kbd>⇥</kbd> · <kbd>⇧⇥</kbd> | Switch tab: All, Text, Links, Images, Files, Pinned |
 | <kbd>⌘P</kbd> | Pin — pinned clips are kept forever |
 | <kbd>⌘⌫</kbd> | Delete clip |
+| <kbd>⌘S</kbd> · <kbd>⇧⌘S</kbd> | Save to Desktop · Save As… |
 | <kbd>⌘O</kbd> | Open link in browser / show file in Finder |
 | <kbd>⌘,</kbd> | Settings |
 | <kbd>Esc</kbd> | Close preview → clear search → close shelf |
@@ -64,7 +66,8 @@ Right-click a card for the same actions; drag a card out to drop its content any
 
 - **Opening:** hover to open, global shortcut (⌥⌘V, ⌃⌥V, ⇧⌘V, ⌃⌘V or off), menu bar icon, launch at login.
 - **Choosing a clip:** paste automatically or copy only.
-- **Capture:** images, Finder files, screenshots saved to disk (detected through Spotlight, any language and save location), OCR, link titles, extra apps to ignore.
+- **Capture:** images, Finder files, OCR, link titles, extra apps to ignore.
+- **Screenshots:** send ⌘⇧3/4/5 to NotchClip instead of the Desktop, copy them to the clipboard, show the shelf after each shot.
 - **History:** keep unpinned clips for 1 day … forever, at most 100 … 3000 clips; clear history; show the data folder.
 - **Pause capture** from the shelf or the menu bar icon at any time.
 
@@ -84,7 +87,8 @@ Sources/
                    PrivacyPolicy, LinkPrivacy, formatting
   NotchClipKit/    macOS layer: ClipboardMonitor, PasteboardWriter, Paster (⌘V via CGEvent),
                    ImageStore + ImageCodec, OCRService (Vision), LinkTitleService,
-                   ScreenshotWatcher (NSMetadataQuery), HotKeyCenter (Carbon),
+                   ScreenshotRouter + ScreenshotInbox (system screenshot redirection),
+                   HotKeyCenter (Carbon),
                    NotchWindowController (non-activating NSPanel, hover tracking,
                    keyboard), SwiftUI shelf views, Settings, AppController, SelfTest
   NotchClip/       Executable entry point
@@ -105,7 +109,7 @@ scripts/build-app.sh                                     # universal .app + zip
 build/NotchClip.app/Contents/MacOS/NotchClip --self-test # end-to-end test of the packaged app
 ```
 
-CI runs all three on macOS for every push. The self-test drives the real app — capture, de-duplication, secret filtering, images, OCR, search, opening the notch window, keyboard navigation, preview, paste, pinning, persistence and cleanup — against a private pasteboard, so it never touches your clipboard.
+CI runs all three on macOS for every push, plus a real-system check (`scripts/ci-screenshot-e2e.sh`) that launches the app, takes a screenshot through the system, verifies it reaches the shelf and not the Desktop, quits, and verifies the original screenshot settings are restored. The self-test drives the real app — capture, de-duplication, secret filtering, images, OCR, search, opening the notch window, keyboard navigation, preview, paste, pinning, persistence and cleanup — against a private pasteboard, so it never touches your clipboard.
 
 ## Credits
 

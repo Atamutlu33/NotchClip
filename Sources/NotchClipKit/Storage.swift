@@ -10,6 +10,10 @@ public struct AppPaths: Sendable {
 
     public var images: URL { root.appendingPathComponent("Images", isDirectory: true) }
     public var history: URL { root.appendingPathComponent("history.json") }
+    /// Where the system screenshot tool writes while NotchClip handles screenshots.
+    public var screenshotInbox: URL { root.appendingPathComponent("ScreenshotInbox", isDirectory: true) }
+    /// Screen recordings kept on the shelf (owned by NotchClip, deleted with their clip).
+    public var recordings: URL { root.appendingPathComponent("Recordings", isDirectory: true) }
 
     public static func standard() -> AppPaths {
         if let override = ProcessInfo.processInfo.environment["NOTCHCLIP_HOME"], !override.isEmpty {
@@ -25,7 +29,9 @@ public struct AppPaths: Sendable {
     }
 
     public func prepare() throws {
-        try FileManager.default.createDirectory(at: images, withIntermediateDirectories: true)
+        for dir in [images, screenshotInbox, recordings] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
     }
 }
 

@@ -22,6 +22,7 @@ public enum NotchClipMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: AppController?
+    private var signalSources: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let id = Bundle.main.bundleIdentifier,
@@ -30,6 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Already running: one notch is enough.
             NSApp.terminate(nil)
             return
+        }
+        // `kill`, logout and `pkill` should still restore the user's screenshot settings.
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { MainActor.assumeIsolated { NSApp.terminate(nil) } }
+            source.resume()
+            signalSources.append(source)
         }
         let controller = AppController()
         controller.start()

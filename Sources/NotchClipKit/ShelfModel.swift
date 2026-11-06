@@ -12,6 +12,10 @@ public protocol ShelfActions: AnyObject {
     func delete(_ item: ClipItem)
     /// Opens a link in the browser or reveals files in Finder.
     func open(_ item: ClipItem)
+    /// ⌘S: save to the Desktop.
+    func save(_ item: ClipItem)
+    /// Choose a location to save.
+    func saveAs(_ item: ClipItem)
     func dragProvider(for item: ClipItem) -> NSItemProvider
     func ingestDrop(_ providers: [NSItemProvider]) -> Bool
     func collapseShelf()

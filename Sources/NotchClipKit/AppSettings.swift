@@ -7,7 +7,9 @@ public final class AppSettings: ObservableObject {
     enum Key {
         static let captureImages = "captureImages"
         static let captureFiles = "captureFiles"
-        static let watchScreenshots = "watchScreenshots"
+        static let routeScreenshots = "routeScreenshots"
+        static let copyScreenshots = "copyScreenshots"
+        static let showShelfAfterScreenshot = "showShelfAfterScreenshot"
         static let fetchLinkTitles = "fetchLinkTitles"
         static let recognizeText = "recognizeText"
         static let historyDays = "historyDays"
@@ -29,7 +31,10 @@ public final class AppSettings: ObservableObject {
 
     @Published public var captureImages: Bool { didSet { defaults.set(captureImages, forKey: Key.captureImages) } }
     @Published public var captureFiles: Bool { didSet { defaults.set(captureFiles, forKey: Key.captureFiles) } }
-    @Published public var watchScreenshots: Bool { didSet { defaults.set(watchScreenshots, forKey: Key.watchScreenshots) } }
+    /// ⌘⇧3 / ⌘⇧4 / ⌘⇧5 go to NotchClip instead of the Desktop.
+    @Published public var routeScreenshots: Bool { didSet { defaults.set(routeScreenshots, forKey: Key.routeScreenshots) } }
+    @Published public var copyScreenshots: Bool { didSet { defaults.set(copyScreenshots, forKey: Key.copyScreenshots) } }
+    @Published public var showShelfAfterScreenshot: Bool { didSet { defaults.set(showShelfAfterScreenshot, forKey: Key.showShelfAfterScreenshot) } }
     @Published public var fetchLinkTitles: Bool { didSet { defaults.set(fetchLinkTitles, forKey: Key.fetchLinkTitles) } }
     @Published public var recognizeText: Bool { didSet { defaults.set(recognizeText, forKey: Key.recognizeText) } }
     @Published public var historyDays: Int { didSet { defaults.set(historyDays, forKey: Key.historyDays) } }
@@ -49,7 +54,9 @@ public final class AppSettings: ObservableObject {
         defaults.register(defaults: [
             Key.captureImages: true,
             Key.captureFiles: true,
-            Key.watchScreenshots: false,
+            Key.routeScreenshots: true,
+            Key.copyScreenshots: true,
+            Key.showShelfAfterScreenshot: true,
             Key.fetchLinkTitles: true,
             Key.recognizeText: true,
             Key.historyDays: 30,
@@ -63,7 +70,9 @@ public final class AppSettings: ObservableObject {
         ])
         captureImages = defaults.bool(forKey: Key.captureImages)
         captureFiles = defaults.bool(forKey: Key.captureFiles)
-        watchScreenshots = defaults.bool(forKey: Key.watchScreenshots)
+        routeScreenshots = defaults.bool(forKey: Key.routeScreenshots)
+        copyScreenshots = defaults.bool(forKey: Key.copyScreenshots)
+        showShelfAfterScreenshot = defaults.bool(forKey: Key.showShelfAfterScreenshot)
         fetchLinkTitles = defaults.bool(forKey: Key.fetchLinkTitles)
         recognizeText = defaults.bool(forKey: Key.recognizeText)
         historyDays = defaults.integer(forKey: Key.historyDays)

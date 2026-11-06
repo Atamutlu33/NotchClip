@@ -179,6 +179,8 @@ struct ShelfView: View {
         Button("Paste") { model.actions?.performPrimary(item) }
         Button("Copy") { model.actions?.copy(item) }
         Button(item.isPinned ? "Unpin" : "Pin") { model.actions?.togglePin(item) }
+        Button("Save to Desktop") { model.actions?.save(item) }
+        Button("Save As…") { model.actions?.saveAs(item) }
         Button("Preview") { model.selectedID = item.id; model.isPreviewing = true }
         if item.kind == .link { Button("Open in Browser") { model.actions?.open(item) } }
         if item.kind == .file || item.kind == .image { Button("Show in Finder") { model.actions?.open(item) } }
@@ -213,7 +215,7 @@ struct ShelfView: View {
     private var footer: some View {
         HStack(spacing: 12) {
             hint("↩", "Paste"); hint("⌘C", "Copy"); hint("Space", "Preview")
-            hint("⌘P", "Pin"); hint("⌘⌫", "Delete"); hint("⇥", "Filter")
+            hint("⌘S", "Save"); hint("⌘P", "Pin"); hint("⌘⌫", "Delete")
             Spacer()
             if model.isPaused {
                 Label("Capture paused", systemImage: "pause.circle.fill").foregroundStyle(.orange)

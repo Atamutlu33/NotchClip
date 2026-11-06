@@ -25,7 +25,9 @@ public enum SelfTest {
             try? FileManager.default.removeItem(at: paths.root)
         }
 
-        let app = AppController(paths: paths, defaults: defaults, pasteboard: pasteboard, enableUI: true)
+        let system = InMemoryPreferences(["location": "/Users/selftest/Desktop"])
+        let app = AppController(paths: paths, defaults: defaults, pasteboard: pasteboard, enableUI: true,
+                                screenshotPreferences: system)
         var pasteCount = 0
         app.isTrusted = { true }
         app.pasteHandler = { pasteCount += 1 }
@@ -127,6 +129,27 @@ public enum SelfTest {
         try? await Task.sleep(nanoseconds: 500_000_000)
         check(window.panel.frame.height <= collapsedHeight + 1, "window shrinks back to the notch")
 
+        // Screenshots: routed to the inbox, put on the shelf and clipboard, never left on disk.
+        check(system.value(forKey: "location") as? String == paths.screenshotInbox.path, "screenshots are redirected away from the Desktop")
+        if let png = renderTestImage(text: "SCREENSHOT") {
+            let shot = paths.screenshotInbox.appendingPathComponent("Screenshot 2026-11-06 at 12.00.00.png")
+            try? png.write(to: shot)
+            let arrived = await waitUntil(seconds: 10) { app.store.items.first?.sourceAppName == "Screenshot" }
+            check(arrived, "a new screenshot appears on the shelf automatically")
+            check(!FileManager.default.fileExists(atPath: shot.path), "the screenshot file is not kept on disk")
+            check(pasteboard.data(forType: .png) == png, "the screenshot is copied to the clipboard")
+            check(app.model.isExpanded && app.model.selectedIndex == 0, "the shelf shows the new screenshot")
+            check(!window.panel.isKeyWindow, "showing it does not steal the keyboard")
+            let saveDir = paths.root.appendingPathComponent("Saved", isDirectory: true)
+            try? FileManager.default.createDirectory(at: saveDir, withIntermediateDirectories: true)
+            if let item = app.store.items.first, let saved = try? app.saveItem(item, to: saveDir).first {
+                check(NSImage(contentsOf: saved) != nil, "you can save the screenshot when you decide to")
+            } else {
+                check(false, "you can save the screenshot when you decide to")
+            }
+            window.collapse(immediately: true)
+        }
+
         // Pinning, persistence and deletion.
         if let first = app.store.items.first {
             app.togglePin(first)
@@ -142,6 +165,7 @@ public enum SelfTest {
         }
 
         app.stop()
+        check(system.value(forKey: "location") as? String == "/Users/selftest/Desktop", "quitting restores the screenshot location")
         return finish(failures)
     }
 

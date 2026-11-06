@@ -49,7 +49,7 @@ final class NotchContainerView: NSView {
 /// Owns the notch window: opening, closing, hover, keyboard and screen changes.
 @MainActor
 public final class NotchWindowController {
-    public enum OpenReason { case hover, keyboard, drop, programmatic }
+    public enum OpenReason { case hover, keyboard, drop, programmatic, peek }
 
     let panel: NotchPanel
     let model: ShelfModel
@@ -58,6 +58,7 @@ public final class NotchWindowController {
     private var openReason: OpenReason?
     private var hoverWorkItem: DispatchWorkItem?
     private var collapseWorkItem: DispatchWorkItem?
+    private var peekWorkItem: DispatchWorkItem?
     private var isHovering = false
     private var keyMonitor: Any?
     private var clickMonitor: Any?
@@ -72,6 +73,8 @@ public final class NotchWindowController {
 
     public static let hoverDelay: TimeInterval = 0.12
     public static let collapseDelay: TimeInterval = 0.35
+    /// How long the shelf stays down after a screenshot if you ignore it.
+    public static let peekDuration: TimeInterval = 4
     static let animationDuration: TimeInterval = 0.32
 
     public init(model: ShelfModel) {
@@ -154,11 +157,34 @@ public final class NotchWindowController {
         model.isExpanded = true
         applyFrame()
         panel.orderFrontRegardless()
-        panel.makeKey()
-        model.requestSearchFocus()
+        if reason != .peek {
+            // A peek must not steal the keyboard from the app you are typing in.
+            panel.makeKey()
+            model.requestSearchFocus()
+        }
         installMonitors()
         onVisibilityChange?(true)
     }
+
+    /// Shows the shelf briefly with one clip selected, without taking keyboard focus (used after a screenshot).
+    /// Hovering or typing keeps it open; otherwise it tucks itself away.
+    public func peek(selecting id: UUID?) {
+        if !model.isExpanded { expand(reason: .peek) }
+        if let id { model.selectedID = id }
+        guard openReason == .peek else { return }
+        peekWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.model.isExpanded, self.openReason == .peek, !self.isHovering else { return }
+                if NSEvent.pressedMouseButtons != 0 { self.peek(selecting: nil); return }
+                self.collapse()
+            }
+        }
+        peekWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.peekDuration, execute: work)
+    }
+
+    public var currentOpenReason: OpenReason? { openReason }
 
     /// Closes the shelf. `immediately` skips the animation so focus returns to the previous app at once (used before pasting).
     public func collapse(immediately: Bool = false) {
@@ -210,6 +236,13 @@ public final class NotchWindowController {
 
     private func hoverChanged(_ inside: Bool) {
         isHovering = inside
+        if inside, model.isExpanded, openReason == .peek {
+            // The user came to look: behave like a normal hover-open from now on.
+            peekWorkItem?.cancel()
+            openReason = .hover
+            panel.makeKey()
+            model.requestSearchFocus()
+        }
         if inside {
             collapseWorkItem?.cancel()
             guard !model.isExpanded, hoverEnabled() else { return }
@@ -256,6 +289,7 @@ public final class NotchWindowController {
     private func cancelTimers() {
         hoverWorkItem?.cancel()
         collapseWorkItem?.cancel()
+        peekWorkItem?.cancel()
     }
 
     // MARK: Event monitors
@@ -355,6 +389,11 @@ public enum ShelfKeyHandler {
             return true
         case "o":
             if let selected { actions?.open(selected) }
+            return true
+        case "s":
+            if let selected {
+                if shift { actions?.saveAs(selected) } else { actions?.save(selected) }
+            }
             return true
         case "y":
             if selected != nil { model.isPreviewing.toggle() }

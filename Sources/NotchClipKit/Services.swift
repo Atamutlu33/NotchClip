@@ -1,7 +1,6 @@
 import AppKit
 import Carbon.HIToolbox
 import LinkPresentation
-import UniformTypeIdentifiers
 import Vision
 
 /// On-device text recognition for images (Apple Vision). Nothing leaves the Mac.
@@ -38,58 +37,6 @@ public enum LinkTitleService {
             return (title?.isEmpty ?? true) ? nil : title
         } catch {
             return nil
-        }
-    }
-}
-
-/// Reports new screenshots (any language, any save location) using Spotlight's screen-capture flag.
-@MainActor
-public final class ScreenshotWatcher: NSObject {
-    private var query: NSMetadataQuery?
-    private var startedAt = Date()
-    private var seen = Set<String>()
-    private let onScreenshot: @MainActor (URL) -> Void
-
-    public init(onScreenshot: @escaping @MainActor (URL) -> Void) {
-        self.onScreenshot = onScreenshot
-    }
-
-    public var isRunning: Bool { query != nil }
-
-    public func start() {
-        guard query == nil else { return }
-        startedAt = Date()
-        let query = NSMetadataQuery()
-        query.predicate = NSPredicate(format: "kMDItemIsScreenCapture == 1")
-        query.searchScopes = [NSMetadataQueryUserHomeScope]
-        NotificationCenter.default.addObserver(self, selector: #selector(queryUpdated(_:)),
-                                               name: .NSMetadataQueryDidUpdate, object: query)
-        self.query = query
-        query.start()
-    }
-
-    public func stop() {
-        guard let query else { return }
-        query.stop()
-        NotificationCenter.default.removeObserver(self, name: .NSMetadataQueryDidUpdate, object: query)
-        self.query = nil
-    }
-
-    @objc private func queryUpdated(_ note: Notification) {
-        let keys = [NSMetadataQueryUpdateAddedItemsKey, NSMetadataQueryUpdateChangedItemsKey]
-        let items = keys.flatMap { (note.userInfo?[$0] as? [NSMetadataItem]) ?? [] }
-        for item in items {
-            guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
-                  !seen.contains(path) else { continue }
-            let created = item.value(forAttribute: NSMetadataItemFSCreationDateKey) as? Date ?? .distantPast
-            guard created >= startedAt.addingTimeInterval(-2) else { continue }
-            let url = URL(fileURLWithPath: path)
-            guard let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image) else { continue }
-            seen.insert(path)
-            // Give the screenshot tool a moment to finish writing the file.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                MainActor.assumeIsolated { self?.onScreenshot(url) }
-            }
         }
     }
 }

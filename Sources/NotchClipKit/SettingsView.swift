@@ -94,8 +94,16 @@ private struct CaptureTab: View {
             Section("Record") {
                 Toggle("Images", isOn: $settings.captureImages)
                 Toggle("Files copied in Finder", isOn: $settings.captureFiles)
-                Toggle("New screenshots saved to disk", isOn: $settings.watchScreenshots)
-                Text("Text and links are always recorded. Screenshots copied with ⌃ are recorded as images.")
+                Text("Text and links are always recorded.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Screenshots") {
+                Toggle("Send screenshots (⌘⇧3, ⌘⇧4, ⌘⇧5) to NotchClip instead of the Desktop", isOn: $settings.routeScreenshots)
+                Toggle("Copy new screenshots to the clipboard", isOn: $settings.copyScreenshots)
+                    .disabled(!settings.routeScreenshots)
+                Toggle("Show the shelf after a screenshot", isOn: $settings.showShelfAfterScreenshot)
+                    .disabled(!settings.routeScreenshots)
+                Text("Nothing is saved to disk until you choose: ⌘S saves to the Desktop, ⇧⌘S lets you pick a place. Screen recordings are kept on the shelf as files. Your own screenshot settings come back when this is off or NotchClip quits.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Smart extras") {

@@ -47,6 +47,8 @@ final class MockActions: ShelfActions {
     func togglePin(_ item: ClipItem) { log.append("pin:\(item.text ?? "")") }
     func delete(_ item: ClipItem) { log.append("delete:\(item.text ?? "")") }
     func open(_ item: ClipItem) { log.append("open:\(item.text ?? "")") }
+    func save(_ item: ClipItem) { log.append("save:\(item.text ?? "")") }
+    func saveAs(_ item: ClipItem) { log.append("saveAs:\(item.text ?? "")") }
     func dragProvider(for item: ClipItem) -> NSItemProvider { NSItemProvider() }
     func ingestDrop(_ providers: [NSItemProvider]) -> Bool { true }
     func collapseShelf() { log.append("collapse") }
@@ -396,7 +398,8 @@ final class AppControllerTests: XCTestCase {
     }
 
     func makeController() -> AppController {
-        AppController(paths: paths, defaults: defaults, pasteboard: pasteboard, enableUI: false)
+        AppController(paths: paths, defaults: defaults, pasteboard: pasteboard, enableUI: false,
+                      screenshotPreferences: InMemoryPreferences())
     }
 
     func png(_ width: Int) -> Data {
@@ -532,5 +535,195 @@ final class AppControllerTests: XCTestCase {
         XCTAssertEqual(again.retentionPolicy, RetentionPolicy(maxAgeDays: 7, maxItems: 300))
         XCTAssertTrue(again.privacyPolicy.shouldIgnore(typeIdentifiers: [], sourceBundleID: "com.example.app"))
         XCTAssertFalse(again.isFirstLaunch)
+    }
+}
+
+@MainActor
+final class ScreenshotTests: XCTestCase {
+    var paths: AppPaths!
+    var defaults: UserDefaults!
+    var suite: String!
+    var pasteboard: NSPasteboard!
+    var system: InMemoryPreferences!
+
+    override func setUp() async throws {
+        paths = AppPaths.temporary()
+        try paths.prepare()
+        suite = "NotchClipShotTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: "recognizeText")
+        defaults.set(false, forKey: "fetchLinkTitles")
+        pasteboard = NSPasteboard(name: NSPasteboard.Name("NotchClipShotTests.\(UUID().uuidString)"))
+        system = InMemoryPreferences(["location": "/Users/me/Desktop", "show-thumbnail": true])
+    }
+
+    override func tearDown() async throws {
+        pasteboard.releaseGlobally()
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: paths.root)
+    }
+
+    func makeController() -> AppController {
+        AppController(paths: paths, defaults: defaults, pasteboard: pasteboard, enableUI: false, screenshotPreferences: system)
+    }
+
+    func png(_ width: Int = 12) -> Data {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 9, bitsPerSample: 8,
+                                   samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        return rep.representation(using: .png, properties: [:])!
+    }
+
+    func testRouterRedirectsAndRestoresExactly() {
+        let router = ScreenshotRouter(system: system, defaults: defaults, inbox: paths.screenshotInbox)
+        router.activate()
+        XCTAssertTrue(router.isActive)
+        XCTAssertEqual(system.values["location"] as? String, paths.screenshotInbox.path)
+        XCTAssertEqual(system.values["target"] as? String, "file")
+        XCTAssertEqual(system.values["show-thumbnail"] as? Bool, false)
+
+        // Activating again (e.g. next launch after a crash) must not overwrite the backup with our own values.
+        router.activate()
+        router.deactivate()
+        XCTAssertFalse(router.isActive)
+        XCTAssertEqual(system.values["location"] as? String, "/Users/me/Desktop")
+        XCTAssertEqual(system.values["show-thumbnail"] as? Bool, true)
+        XCTAssertNil(system.values["target"], "a key that did not exist before is removed again")
+
+        router.deactivate() // no-op when inactive
+        XCTAssertEqual(system.values["location"] as? String, "/Users/me/Desktop")
+    }
+
+    func testControllerStartAndStopRouteScreenshots() {
+        let app = makeController()
+        app.start()
+        XCTAssertEqual(system.values["location"] as? String, paths.screenshotInbox.path)
+        app.settings.routeScreenshots = false
+        let restored = expectation(description: "settings applied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { restored.fulfill() }
+        wait(for: [restored], timeout: 2)
+        XCTAssertEqual(system.values["location"] as? String, "/Users/me/Desktop")
+        app.settings.routeScreenshots = true
+        let reapplied = expectation(description: "settings applied again")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { reapplied.fulfill() }
+        wait(for: [reapplied], timeout: 2)
+        XCTAssertEqual(system.values["location"] as? String, paths.screenshotInbox.path)
+        app.stop()
+        XCTAssertEqual(system.values["location"] as? String, "/Users/me/Desktop", "quitting gives the settings back")
+    }
+
+    func testInboxDeliversFinishedFilesOnce() async throws {
+        let inbox = ScreenshotInbox(directory: paths.screenshotInbox)
+        var delivered: [(String, ScreenshotInbox.Kind)] = []
+        inbox.onFile = { delivered.append(($0.lastPathComponent, $1)) }
+        inbox.start()
+        defer { inbox.stop() }
+        try Data("partial".utf8).write(to: paths.screenshotInbox.appendingPathComponent(".Screenshot temp.png"))
+        try png().write(to: paths.screenshotInbox.appendingPathComponent("Screenshot 1.png"))
+        try Data("movie".utf8).write(to: paths.screenshotInbox.appendingPathComponent("Recording 1.mov"))
+        let deadline = Date().addingTimeInterval(5)
+        while delivered.count < 2 && Date() < deadline { try await Task.sleep(nanoseconds: 50_000_000) }
+        try await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertEqual(delivered.map(\.0).sorted(), ["Recording 1.mov", "Screenshot 1.png"])
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: delivered)["Screenshot 1.png"], .image)
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: delivered)["Recording 1.mov"], .movie)
+    }
+
+    func testScreenshotGoesToShelfAndClipboardNotDisk() async throws {
+        let app = makeController()
+        let file = paths.screenshotInbox.appendingPathComponent("Screenshot 2026-11-06 at 12.57.03.png")
+        let data = png()
+        try data.write(to: file)
+        let item = await app.processScreenshotFile(file, kind: .image)
+        XCTAssertEqual(item?.kind, .image)
+        XCTAssertEqual(app.store.items.first?.sourceAppName, "Screenshot")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the inbox file is removed")
+        XCTAssertEqual(pasteboard.data(forType: .png), data, "the screenshot is on the clipboard")
+        XCTAssertFalse(app.monitor.checkNow(), "and is not captured a second time")
+        XCTAssertEqual(app.store.items.count, 1)
+    }
+
+    func testScreenshotCopyCanBeTurnedOff() async throws {
+        defaults.set(false, forKey: "copyScreenshots")
+        let app = makeController()
+        pasteboard.clearContents(); pasteboard.setString("keep me", forType: .string)
+        let file = paths.screenshotInbox.appendingPathComponent("Screenshot.png")
+        try png().write(to: file)
+        await app.processScreenshotFile(file, kind: .image)
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep me")
+        XCTAssertEqual(app.store.items.first?.kind, .image)
+    }
+
+    func testRecordingIsKeptAsOwnedFileAndDeletedWithClip() async throws {
+        let app = makeController()
+        let file = paths.screenshotInbox.appendingPathComponent("Screen Recording 1.mov")
+        try Data("movie".utf8).write(to: file)
+        let item = try XCTUnwrap(await app.processScreenshotFile(file, kind: .movie))
+        XCTAssertEqual(item.kind, .file)
+        let kept = try XCTUnwrap(item.filePaths?.first)
+        XCTAssertTrue(kept.hasPrefix(paths.recordings.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        app.delete(item)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: kept), "owned recording is deleted with its clip")
+    }
+
+    func testUserFilesAreNeverDeletedWithClip() throws {
+        let app = makeController()
+        let userFile = paths.root.appendingPathComponent("mine.txt")
+        try Data("x".utf8).write(to: userFile)
+        app.handle(.files([userFile]), source: nil)
+        app.delete(app.store.items[0])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: userFile.path))
+    }
+
+    func testCorruptImageFallsBackToFile() async throws {
+        let app = makeController()
+        let file = paths.screenshotInbox.appendingPathComponent("Broken.png")
+        try Data("not a png".utf8).write(to: file)
+        let item = await app.processScreenshotFile(file, kind: .image)
+        XCTAssertEqual(item?.kind, .file, "nothing is lost even if the image cannot be read")
+    }
+
+    func testSaveItemWritesUniqueFiles() async throws {
+        let app = makeController()
+        let out = paths.root.appendingPathComponent("out", isDirectory: true)
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let file = paths.screenshotInbox.appendingPathComponent("Screenshot.png")
+        try png().write(to: file)
+        let shot = try XCTUnwrap(await app.processScreenshotFile(file, kind: .image))
+        let first = try app.saveItem(shot, to: out)
+        let second = try app.saveItem(shot, to: out)
+        XCTAssertTrue(first[0].lastPathComponent.hasPrefix("Screenshot "))
+        XCTAssertTrue(first[0].lastPathComponent.hasSuffix(".png"))
+        XCTAssertTrue(second[0].lastPathComponent.hasSuffix(" 2.png"))
+        XCTAssertNotNil(NSImage(contentsOf: first[0]))
+
+        app.handle(.text("hello file"), source: nil)
+        let text = try app.saveItem(app.store.items[0], to: out)
+        XCTAssertEqual(try String(contentsOf: text[0], encoding: .utf8), "hello file")
+        XCTAssertTrue(text[0].lastPathComponent.hasSuffix(".txt"))
+
+        let missing = ClipItem.fromFiles(["/nonexistent/\(UUID().uuidString)"], at: Date())!
+        XCTAssertThrowsError(try app.saveItem(missing, to: out))
+    }
+
+    func testSaveKeys() {
+        let model = ShelfModel(imageStore: ImageStore(directory: FileManager.default.temporaryDirectory))
+        let actions = MockActions()
+        model.actions = actions
+        model.setItems([ClipItem.fromText("a", at: Date())!])
+        model.prepareForOpening()
+        _ = ShelfKeyHandler.handle(keyCode: 1, command: true, shift: false, characters: "s", model: model, collapse: {})
+        _ = ShelfKeyHandler.handle(keyCode: 1, command: true, shift: true, characters: "s", model: model, collapse: {})
+        XCTAssertEqual(actions.log, ["save:a", "saveAs:a"])
+    }
+
+    func testFileNaming() throws {
+        let date = Date(timeIntervalSince1970: 0)
+        XCTAssertTrue(FileNaming.screenshotName(for: date, ext: "png").hasPrefix("Screenshot 1970-01-01 at "))
+        XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.PNG")), .image)
+        XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.mov")), .movie)
+        XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.zzz")), .other)
     }
 }

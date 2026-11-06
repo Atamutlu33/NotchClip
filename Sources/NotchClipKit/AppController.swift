@@ -26,7 +26,8 @@ public final class AppController: NSObject, ShelfActions {
     private let enableUI: Bool
     private var statusItem: NSStatusItem?
     private var menuTargets: [MenuTarget] = []
-    private var screenshotWatcher: ScreenshotWatcher?
+    public let screenshotRouter: ScreenshotRouter
+    public let screenshotInbox: ScreenshotInbox
     private var settingsWindow: SettingsWindowController?
     private var cancellables = Set<AnyCancellable>()
     private var saveScheduled = false
@@ -36,9 +37,11 @@ public final class AppController: NSObject, ShelfActions {
     private var started = false
 
     static let dropSource = AppSource(bundleID: nil, name: "Dropped on notch")
+    static let screenshotSource = AppSource(bundleID: "com.apple.screencaptureui", name: "Screenshot")
 
     public init(paths: AppPaths = .standard(), defaults: UserDefaults = .standard,
-                pasteboard: NSPasteboard = .general, enableUI: Bool = true) {
+                pasteboard: NSPasteboard = .general, enableUI: Bool = true,
+                screenshotPreferences: PreferencesDomain = ScreencapturePreferences()) {
         try? paths.prepare()
         self.paths = paths
         self.pasteboard = pasteboard
@@ -48,7 +51,10 @@ public final class AppController: NSObject, ShelfActions {
         store = ClipStore(backing: JSONFileBacking(url: paths.history), policy: settings.retentionPolicy)
         model = ShelfModel(imageStore: imageStore)
         monitor = ClipboardMonitor(pasteboard: pasteboard)
+        screenshotRouter = ScreenshotRouter(system: screenshotPreferences, defaults: defaults, inbox: paths.screenshotInbox)
+        screenshotInbox = ScreenshotInbox(directory: paths.screenshotInbox)
         super.init()
+        screenshotInbox.onFile = { [weak self] url, kind in self?.handleScreenshotFile(url, kind: kind) }
 
         model.actions = self
         model.isPaused = settings.isPaused
@@ -87,7 +93,9 @@ public final class AppController: NSObject, ShelfActions {
 
     public func stop() {
         monitor.stop()
-        screenshotWatcher?.stop()
+        // Give the user's own screenshot settings back while NotchClip is not running.
+        screenshotRouter.deactivate()
+        screenshotInbox.stop()
         retentionTimer?.invalidate()
         HotKeyCenter.shared.unregister()
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
@@ -123,14 +131,12 @@ public final class AppController: NSObject, ShelfActions {
         store.policy = settings.retentionPolicy
         model.isPaused = settings.isPaused
 
-        if settings.watchScreenshots {
-            if screenshotWatcher == nil {
-                screenshotWatcher = ScreenshotWatcher { [weak self] url in self?.ingestScreenshot(url) }
-            }
-            screenshotWatcher?.start()
+        if settings.routeScreenshots {
+            screenshotRouter.activate()
         } else {
-            screenshotWatcher?.stop()
+            screenshotRouter.deactivate()
         }
+        screenshotInbox.start()
 
         guard enableUI else { return }
         if registeredHotKey != settings.hotKey {
@@ -173,38 +179,84 @@ public final class AppController: NSObject, ShelfActions {
 
     @discardableResult
     func ingestImage(_ data: Data, source: AppSource?) -> Task<Void, Never> {
-        Task { [weak self] in
-            let normalized = await Task.detached(priority: .userInitiated) { ImageCodec.normalize(data) }.value
-            guard let self, let normalized else { return }
-            let hash = ContentHash.forImage(normalized.png)
-            let now = Date()
-            if let existing = self.store.item(hash: hash), let name = existing.imageFileName, self.imageStore.exists(name) {
-                var refreshed = existing
-                refreshed.sourceBundleID = source?.bundleID
-                refreshed.sourceAppName = source?.name
-                self.store.add(refreshed)
-                return
-            }
-            let fileName: String
-            do {
-                fileName = try self.imageStore.save(pngData: normalized.png, hash: hash)
-            } catch {
-                NSLog("NotchClip: could not save image: \(error.localizedDescription)")
-                return
-            }
-            let item = ClipItem.fromImage(fileName: fileName, hash: hash, width: normalized.width, height: normalized.height,
-                                          at: now, sourceBundleID: source?.bundleID, sourceAppName: source?.name)
-            self.store.add(item)
-            if self.settings.recognizeText {
-                let text = await OCRService.recognizeText(at: self.imageStore.url(for: fileName))
-                if let text { self.store.update(id: item.id) { $0.recognizedText = text } }
-            }
-        }
+        Task { [weak self] in _ = await self?.ingestImageItem(data, source: source) }
     }
 
-    private func ingestScreenshot(_ url: URL) {
-        guard !settings.isPaused, let data = try? Data(contentsOf: url) else { return }
-        ingestImage(data, source: AppSource(bundleID: "com.apple.screencaptureui", name: "Screenshot"))
+    /// Stores an image (or refreshes the identical one) and returns its clip. Text recognition continues in the background.
+    func ingestImageItem(_ data: Data, source: AppSource?) async -> ClipItem? {
+        let normalized = await Task.detached(priority: .userInitiated) { ImageCodec.normalize(data) }.value
+        guard let normalized else { return nil }
+        let hash = ContentHash.forImage(normalized.png)
+        if let existing = store.item(hash: hash), let name = existing.imageFileName, imageStore.exists(name) {
+            var refreshed = existing
+            refreshed.sourceBundleID = source?.bundleID
+            refreshed.sourceAppName = source?.name
+            store.add(refreshed)
+            return store.item(id: existing.id)
+        }
+        let fileName: String
+        do {
+            fileName = try imageStore.save(pngData: normalized.png, hash: hash)
+        } catch {
+            NSLog("NotchClip: could not save image: \(error.localizedDescription)")
+            return nil
+        }
+        let item = ClipItem.fromImage(fileName: fileName, hash: hash, width: normalized.width, height: normalized.height,
+                                      at: Date(), sourceBundleID: source?.bundleID, sourceAppName: source?.name)
+        store.add(item)
+        if settings.recognizeText {
+            let url = imageStore.url(for: fileName)
+            Task { [weak self] in
+                guard let text = await OCRService.recognizeText(at: url) else { return }
+                self?.store.update(id: item.id) { $0.recognizedText = text }
+            }
+        }
+        return item
+    }
+
+    // MARK: Screenshots
+
+    /// A screenshot or recording arrived in the inbox: put it on the shelf, copy it, show it, and leave the Desktop alone.
+    func handleScreenshotFile(_ url: URL, kind: ScreenshotInbox.Kind) {
+        Task { [weak self] in await self?.processScreenshotFile(url, kind: kind) }
+    }
+
+    @discardableResult
+    func processScreenshotFile(_ url: URL, kind: ScreenshotInbox.Kind) async -> ClipItem? {
+        var item: ClipItem?
+        if kind == .image, let data = try? Data(contentsOf: url) {
+            item = await ingestImageItem(data, source: Self.screenshotSource)
+            if item != nil { try? FileManager.default.removeItem(at: url) }
+        }
+        if item == nil, FileManager.default.fileExists(atPath: url.path) {
+            // Recordings (and anything that is not a readable image) stay files; NotchClip keeps them until the clip is deleted.
+            let destination = FileNaming.uniqueURL(in: paths.recordings, name: url.lastPathComponent)
+            do {
+                try FileManager.default.createDirectory(at: paths.recordings, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: url, to: destination)
+                if let clip = ClipItem.fromFiles([destination.path], at: Date(),
+                                                 sourceBundleID: Self.screenshotSource.bundleID, sourceAppName: Self.screenshotSource.name) {
+                    store.add(clip)
+                    item = store.item(hash: clip.contentHash)
+                }
+            } catch {
+                NSLog("NotchClip: could not keep recording: \(error.localizedDescription)")
+            }
+        }
+        guard let item else { return nil }
+        if settings.copyScreenshots, PasteboardWriter.write(item, images: imageStore, to: pasteboard) {
+            monitor.ignore(changeCount: pasteboard.changeCount)
+        }
+        if settings.showShelfAfterScreenshot {
+            windowController?.peek(selecting: item.id)
+        }
+        return item
+    }
+
+    /// True for files that live in NotchClip's own folders and should be deleted together with their clip.
+    func ownsFile(_ path: String) -> Bool {
+        let owned = paths.recordings.resolvingSymlinksInPath().path + "/"
+        return URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(owned)
     }
 
     private func fetchTitle(for item: ClipItem) -> Task<Void, Never>? {
@@ -237,6 +289,10 @@ public final class AppController: NSObject, ShelfActions {
         let stillUsed = Set(store.items.compactMap(\.imageFileName))
         for name in removed.compactMap(\.imageFileName) where !stillUsed.contains(name) {
             imageStore.delete(name)
+        }
+        let stillUsedFiles = Set(store.items.flatMap { $0.filePaths ?? [] })
+        for path in removed.flatMap({ $0.filePaths ?? [] }) where ownsFile(path) && !stillUsedFiles.contains(path) {
+            try? FileManager.default.removeItem(atPath: path)
         }
     }
 
@@ -365,6 +421,100 @@ public final class AppController: NSObject, ShelfActions {
     nonisolated static func loadData(_ provider: NSItemProvider, type: String) async -> Data? {
         await withCheckedContinuation { continuation in
             _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in continuation.resume(returning: data) }
+        }
+    }
+
+    // MARK: Saving
+
+    struct ExportEntry {
+        var source: URL?
+        var data: Data?
+        var name: String
+    }
+
+    func exportEntries(for item: ClipItem) -> [ExportEntry] {
+        let stamp = FileNaming.screenshotName(for: item.createdAt, ext: "")
+            .replacingOccurrences(of: "Screenshot ", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        switch item.kind {
+        case .image:
+            guard let name = item.imageFileName, imageStore.exists(name) else { return [] }
+            let fileName = item.sourceAppName == Self.screenshotSource.name
+                ? FileNaming.screenshotName(for: item.createdAt, ext: "png") : "Image \(stamp).png"
+            return [ExportEntry(source: imageStore.url(for: name), data: nil, name: fileName)]
+        case .file:
+            return item.fileURLs
+                .filter { FileManager.default.fileExists(atPath: $0.path) }
+                .map { ExportEntry(source: $0, data: nil, name: $0.lastPathComponent) }
+        case .text, .link:
+            guard let text = item.text else { return [] }
+            return [ExportEntry(source: nil, data: Data(text.utf8), name: "Clip \(stamp).txt")]
+        }
+    }
+
+    /// Copies the clip's content into a folder. Returns the files written.
+    @discardableResult
+    func saveItem(_ item: ClipItem, to directory: URL) throws -> [URL] {
+        let entries = exportEntries(for: item)
+        guard !entries.isEmpty else { throw CocoaError(.fileNoSuchFile) }
+        var written: [URL] = []
+        for entry in entries {
+            let destination = FileNaming.uniqueURL(in: directory, name: entry.name)
+            if let source = entry.source {
+                try FileManager.default.copyItem(at: source, to: destination)
+            } else if let data = entry.data {
+                try data.write(to: destination, options: [.atomic])
+            }
+            written.append(destination)
+        }
+        return written
+    }
+
+    /// ⌘S: save to the Desktop.
+    public func save(_ item: ClipItem) {
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop")
+        do {
+            let written = try saveItem(item, to: desktop)
+            model.showToast(written.count == 1 ? "Saved to Desktop · \(written[0].lastPathComponent)" : "Saved \(written.count) files to Desktop",
+                            symbol: "square.and.arrow.down.fill", duration: 2)
+        } catch {
+            model.showToast("Could not save: \(error.localizedDescription)", symbol: "exclamationmark.triangle.fill", duration: 2.5)
+        }
+    }
+
+    /// Lets the user choose where to save.
+    public func saveAs(_ item: ClipItem) {
+        let entries = exportEntries(for: item)
+        guard !entries.isEmpty else {
+            model.showToast("This clip is no longer available", symbol: "exclamationmark.triangle.fill")
+            return
+        }
+        windowController?.collapse(immediately: true)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { NSApp.deactivate() }
+        if entries.count == 1 {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = entries[0].name
+            panel.canCreateDirectories = true
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                if let source = entries[0].source {
+                    try FileManager.default.copyItem(at: source, to: url)
+                } else {
+                    try entries[0].data?.write(to: url, options: [.atomic])
+                }
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        } else {
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Save Here"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            do { try saveItem(item, to: url) } catch { NSAlert(error: error).runModal() }
         }
     }
 
