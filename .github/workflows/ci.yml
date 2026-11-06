@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Build (debug)
+        run: swift build 2>&1 | tee build.log
+
+      - name: Unit tests
+        run: swift test 2>&1 | tee test.log
+
+      - name: Package universal app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || VERSION="1.0.0"
+          scripts/build-app.sh "$VERSION"
+
+      - name: End-to-end self-test of the packaged app
+        run: |
+          set -o pipefail
+          ( sleep 120; echo "self-test timed out"; pkill -x NotchClip ) &
+          build/NotchClip.app/Contents/MacOS/NotchClip --self-test 2>&1 | tee selftest.log
+
+      - name: Launch smoke test
+        run: |
+          open -n build/NotchClip.app --env NOTCHCLIP_HOME="$RUNNER_TEMP/notchclip-home"
+          sleep 6
+          pgrep -x NotchClip
+          pkill -x NotchClip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: NotchClip
+          path: |
+            build/NotchClip.zip
+            *.log
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/NotchClip.zip
+          generate_release_notes: true
