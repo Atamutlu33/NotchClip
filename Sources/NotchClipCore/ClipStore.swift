@@ -60,13 +60,14 @@ public final class JSONFileBacking: ClipStoreBacking {
 
     private static let encoder: JSONEncoder = {
         let e = JSONEncoder()
-        e.dateEncodingStrategy = .secondsSince1970
+        // Reference-date seconds round-trip exactly; seconds since 1970 lose sub-microsecond precision.
+        e.dateEncodingStrategy = .deferredToDate
         return e
     }()
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
-        d.dateDecodingStrategy = .secondsSince1970
+        d.dateDecodingStrategy = .deferredToDate
         return d
     }()
 }

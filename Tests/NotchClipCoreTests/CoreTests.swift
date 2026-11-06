@@ -184,6 +184,16 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(reloaded.items, store.items)
     }
 
+    func testRealDatesRoundTripExactly() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("history.json")
+        let store = ClipStore(backing: JSONFileBacking(url: url))
+        for text in ["a", "b", "c"] { store.add(ClipItem.fromText(text, at: Date())!) }
+        XCTAssertTrue(store.persist())
+        XCTAssertEqual(ClipStore(backing: JSONFileBacking(url: url)).items, store.items)
+    }
+
     func testCorruptFileIsMovedAside() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
