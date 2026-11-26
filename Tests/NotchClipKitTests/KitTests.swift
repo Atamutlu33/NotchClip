@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import NotchClipCore
 @testable import NotchClipKit
@@ -727,5 +728,62 @@ final class ScreenshotTests: XCTestCase {
         XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.PNG")), .image)
         XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.mov")), .movie)
         XCTAssertEqual(ScreenshotInbox.kind(of: URL(fileURLWithPath: "/a/b.zzz")), .other)
+    }
+}
+
+@MainActor
+final class CardRenderingTests: XCTestCase {
+    /// Regression: a panoramic screenshot used to spill out of its card and over its neighbours.
+    func testWideAndTallImagesStayInsideTheirCard() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ImageStore(directory: dir)
+
+        for (width, height) in [(3000, 300), (300, 3000)] {
+            let png = try XCTUnwrap(Self.solidRedPNG(width: width, height: height))
+            let hash = ContentHash.forImage(png)
+            let name = try store.save(pngData: png, hash: hash)
+            let item = ClipItem.fromImage(fileName: name, hash: hash, width: width, height: height, at: Date())
+
+            let canvas = CGSize(width: 520, height: 360)
+            let card = ClipCard(item: item, index: 0, isSelected: false, imageStore: store)
+            let host = NSHostingView(rootView: card.frame(width: canvas.width, height: canvas.height))
+            host.frame = NSRect(origin: .zero, size: canvas)
+            let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: rep)
+
+            let scale = CGFloat(rep.pixelsWide) / canvas.width
+            func pixel(_ x: CGFloat, _ y: CGFloat) -> NSColor? {
+                rep.colorAt(x: Int(x * scale), y: Int(y * scale))?.usingColorSpace(.deviceRGB)
+            }
+            let cardMinX = (canvas.width - ClipCard.size.width) / 2
+            let cardMinY = (canvas.height - ClipCard.size.height) / 2
+
+            // Inside the card the image is drawn…
+            let inside = try XCTUnwrap(pixel(canvas.width / 2, cardMinY + 40))
+            XCTAssertGreaterThan(inside.redComponent, 0.6, "\(width)×\(height): image is drawn inside the card")
+            XCTAssertLessThan(inside.greenComponent, 0.4)
+            // …and nothing is drawn beside, above or below it.
+            for (x, y) in [(cardMinX - 30, canvas.height / 2), (cardMinX + ClipCard.size.width + 30, canvas.height / 2),
+                           (canvas.width / 2, cardMinY - 30), (canvas.width / 2, cardMinY + ClipCard.size.height + 30)] {
+                let outside = try XCTUnwrap(pixel(x, y))
+                XCTAssertLessThan(outside.alphaComponent, 0.05, "\(width)×\(height): nothing drawn at (\(x), \(y)) outside the card")
+            }
+        }
+    }
+
+    static func solidRedPNG(width: Int, height: Int) -> Data? {
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor.red.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
     }
 }

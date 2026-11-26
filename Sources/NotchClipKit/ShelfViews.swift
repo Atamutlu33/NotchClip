@@ -254,6 +254,7 @@ struct ShelfView: View {
 
 /// One history entry.
 struct ClipCard: View {
+    static let size = CGSize(width: 156, height: 120)
     let item: ClipItem
     let index: Int
     let isSelected: Bool
@@ -278,9 +279,11 @@ struct ClipCard: View {
             .foregroundStyle(.white.opacity(0.45))
         }
         .padding(8)
-        .frame(width: 156, height: 120)
+        .frame(width: ClipCard.size.width, height: ClipCard.size.height)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.white.opacity(isSelected ? 0.16 : 0.07)))
+        // Nothing inside a card may draw outside it.
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(isSelected ? Color.accentColor : Color.white.opacity(0.06), lineWidth: isSelected ? 2 : 1))
         .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -309,10 +312,15 @@ struct ClipCard: View {
             }
         case .image:
             if let name = item.imageFileName, let image = imageStore.thumbnail(name) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                // The clear box takes the card's size; the filled image is cropped to it,
+                // so very wide or tall images (panoramic screenshots) never spill over neighbouring cards.
+                Color.clear
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
             } else {
                 Label("Image missing", systemImage: "photo").font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
