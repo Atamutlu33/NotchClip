@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import NotchClipCore
 @testable import NotchClipKit
